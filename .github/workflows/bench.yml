@@ -3,54 +3,51 @@ on:
   push:
   workflow_dispatch:
     inputs:
-      inject_slowdown:
-        description: "DEMO: multiply results by this factor (e.g. 0.7) to fake a regression"
-        required: false
+      slowdown:
+        description: "Demo: multiply results by this factor (0.7 = 30% slower)"
         default: "1.0"
+
+# Runs share one database through the cache, so run them one at a time.
+concurrency:
+  group: bench-${{ github.ref }}
 
 jobs:
   bench:
     strategy:
       fail-fast: false
-      matrix: { os: [ubuntu-latest, windows-latest] }
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
     env:
-      PYTHONUTF8: "1"                     # Windows defaults to cp1252 -> can't print "Δ"
-      BENCH_INJECT_SLOWDOWN: ${{ inputs.inject_slowdown || '1.0' }}
+      BENCH_SLOWDOWN: ${{ inputs.slowdown || '1.0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11", cache: pip }
+        with:
+          python-version: "3.11"
 
-      - name: Install glmark2 (Linux)
+      - name: Install glmark2 (Linux only)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y glmark2 xvfb
 
-      # CPU torch FIRST: otherwise `pip install -r requirements.txt` pulls the
-      # ~2.5 GB CUDA build of torch on Linux before we can swap it out.
+      # CPU build of torch: the runners have no GPU, and it is much smaller.
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -r requirements.txt
 
-      # Runners are thrown away after each job, so carry the SQLite history.
-      # Exact key never hits (run_id is new) -> restore newest older DB via
-      # restore-keys, then save a new entry at the end of a *successful* job.
-      # A regressed run fails the job, so it is NOT saved and can't poison
-      # the baseline.
+      # Runners are deleted after every job, so the database is carried from
+      # run to run with the cache. A failed (regressed) run is not saved,
+      # so it can't become part of the baseline.
       - uses: actions/cache@v4
         with:
           path: results.db
-          key: bench-db-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: bench-db-${{ runner.os }}-
+          key: results-v2-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: results-v2-${{ runner.os }}-
 
       - run: pytest
-
-      - name: Benchmark + regression report
-        run: python -m bench.cli run --db results.db --report
+      - run: python -m bench --db results.db
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: results-${{ matrix.os }}
           path: results.db
-          if-no-files-found: warn
