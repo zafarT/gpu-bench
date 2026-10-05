@@ -39,4 +39,4 @@ def run_matmul(n=2048, repeats=20, warmup=3, dtype=torch.float32):
     }
 
 if __name__ == "__main__":
-    run = print(run_matmul())
+    print(run_matmul())
